@@ -1,5 +1,6 @@
 use crate::{
     agent_adapters::AgentAdapter,
+    app_server_persistence,
     codex_adapter::CodexAdapter,
     codex_app_server, codex_runtime, context_compiler, database,
     error::{AppError, AppResult},
@@ -14,6 +15,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::Arc,
 };
 
 fn agent(value: &str) -> AgentKind {
@@ -221,6 +223,7 @@ pub fn create(
     data_dir: &Path,
     options: &ContextCompileOptions,
     launch: bool,
+    app_server: &Arc<codex_app_server::AppServerManager>,
 ) -> AppResult<ContinuationRecord> {
     let project = unified_project::get(db_path, &options.project_id, options.token_budget)?;
     let compact = uuid::Uuid::new_v4().simple().to_string();
@@ -316,7 +319,7 @@ pub fn create(
         return get(db_path, &id);
     }
     if launch {
-        launch_prepared(db_path, data_dir, &id)
+        launch_prepared(db_path, data_dir, &id, app_server)
     } else {
         get(db_path, &id)
     }
@@ -412,7 +415,12 @@ fn create_legacy(
     Ok(record)
 }
 
-pub fn launch_prepared(db_path: &Path, data_dir: &Path, id: &str) -> AppResult<ContinuationRecord> {
+pub fn launch_prepared(
+    db_path: &Path,
+    data_dir: &Path,
+    id: &str,
+    app_server: &Arc<codex_app_server::AppServerManager>,
+) -> AppResult<ContinuationRecord> {
     let record = get(db_path, id)?;
     if !matches!(record.target_agent, AgentKind::Codex) {
         return Err(AppError::Message(
@@ -492,16 +500,22 @@ pub fn launch_prepared(db_path: &Path, data_dir: &Path, id: &str) -> AppResult<C
         .ok_or_else(|| AppError::Message("Codex 能力报告缺少可执行文件路径".into()))?;
     transition(db_path, id, ContinuationStatus::Launching, None)?;
     if capabilities.supports_app_server
-        && profile.as_ref().is_some_and(|value| {
-            value.launch_arguments.is_empty() && value.approval_mode == "never"
-        })
+        && profile
+            .as_ref()
+            .is_some_and(|value| value.launch_arguments.is_empty())
     {
         match codex_app_server::start_fresh(
-            command,
-            profile.as_ref(),
-            &record.working_directory,
-            &record.target_model,
-            &prompt,
+            app_server,
+            codex_app_server::AppServerStartRequest {
+                db_path,
+                continuation_id: &record.id,
+                project_id: &record.project_id,
+                command,
+                profile: profile.as_ref(),
+                working_directory: &record.working_directory,
+                target_model: &record.target_model,
+                prompt: &prompt,
+            },
         ) {
             Ok(launch) => {
                 let started_at = Utc::now().to_rfc3339();
@@ -595,6 +609,13 @@ fn bind_app_server_thread(
     record: &ContinuationRecord,
     thread_id: &str,
 ) -> AppResult<()> {
+    app_server_persistence::ensure_bound_session(
+        db_path,
+        thread_id,
+        &record.id,
+        &record.project_id,
+        &record.working_directory,
+    )?;
     let mut conn = database::connect(db_path)?;
     let transaction = conn.transaction()?;
     let bound_elsewhere: i64 = transaction.query_row(
@@ -622,6 +643,7 @@ fn bind_app_server_thread(
     )?;
     transaction.commit()?;
     transition(db_path, &record.id, ContinuationStatus::Listening, None)?;
+    let _ = app_server_persistence::sync_entire_session(db_path, thread_id)?;
     let (compiled_json, stored_original_tokens): (String, i64) = database::connect(db_path)?.query_row(
         "SELECT compiled_json,COALESCE(estimated_original_tokens,0) FROM context_snapshots WHERE id=?1",
         params![record.snapshot_id],
@@ -1157,7 +1179,12 @@ pub fn cancel(db_path: &Path, id: &str) -> AppResult<ContinuationRecord> {
     get(db_path, id)
 }
 
-pub fn retry(db_path: &Path, data_dir: &Path, id: &str) -> AppResult<ContinuationRecord> {
+pub fn retry(
+    db_path: &Path,
+    data_dir: &Path,
+    id: &str,
+    app_server: &Arc<codex_app_server::AppServerManager>,
+) -> AppResult<ContinuationRecord> {
     let record = get(db_path, id)?;
     match status(&record.status) {
         Some(ContinuationStatus::LaunchFailed) => {
@@ -1171,7 +1198,7 @@ pub fn retry(db_path: &Path, data_dir: &Path, id: &str) -> AppResult<Continuatio
                 params![id],
             )?;
             transition(db_path, id, ContinuationStatus::PreparingLaunch, None)?;
-            launch_prepared(db_path, data_dir, id)
+            launch_prepared(db_path, data_dir, id, app_server)
         }
         Some(
             ContinuationStatus::DetectionTimeout

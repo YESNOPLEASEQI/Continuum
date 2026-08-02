@@ -532,14 +532,25 @@ pub fn create_continuation(
     options: ContextCompileOptions,
     launch: bool,
 ) -> AppResult<ContinuationRecord> {
-    continuation::create(&state.db_path, &state.data_dir, &options, launch)
+    continuation::create(
+        &state.db_path,
+        &state.data_dir,
+        &options,
+        launch,
+        &state.app_server,
+    )
 }
 #[tauri::command]
 pub fn launch_continuation(
     state: State<'_, AppState>,
     continuation_id: String,
 ) -> AppResult<ContinuationRecord> {
-    continuation::launch_prepared(&state.db_path, &state.data_dir, &continuation_id)
+    continuation::launch_prepared(
+        &state.db_path,
+        &state.data_dir,
+        &continuation_id,
+        &state.app_server,
+    )
 }
 #[tauri::command]
 pub fn list_continuations(
@@ -575,7 +586,28 @@ pub fn retry_continuation(
     state: State<'_, AppState>,
     continuation_id: String,
 ) -> AppResult<ContinuationRecord> {
-    continuation::retry(&state.db_path, &state.data_dir, &continuation_id)
+    continuation::retry(
+        &state.db_path,
+        &state.data_dir,
+        &continuation_id,
+        &state.app_server,
+    )
+}
+
+#[tauri::command]
+pub fn list_app_server_requests(
+    state: State<'_, AppState>,
+) -> AppResult<Vec<AppServerClientRequest>> {
+    state.app_server.list_requests()
+}
+
+#[tauri::command]
+pub fn respond_app_server_request(
+    state: State<'_, AppState>,
+    request_id: String,
+    response: serde_json::Value,
+) -> AppResult<()> {
+    state.app_server.respond(&request_id, response)
 }
 #[tauri::command]
 pub fn recover_continuations(state: State<'_, AppState>) -> AppResult<Vec<ContinuationRecord>> {

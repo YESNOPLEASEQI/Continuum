@@ -24,11 +24,12 @@ import {
   PathText,
 } from "../components/ui";
 import { useAppStore } from "../store/appStore";
+import { useMajorSessionScan } from "../motion/useMajorSessionScan";
 import type { DatabaseBackupRecord, DiagnosticsReport } from "../types/models";
 
 export default function DiagnosticsPage() {
   const notify = useAppStore((state) => state.notify);
-  const scanSessions = useAppStore((state) => state.scanSessions);
+  const scanSessions = useMajorSessionScan();
   const [report, setReport] = useState<DiagnosticsReport | null>(null);
   const [backups, setBackups] = useState<DatabaseBackupRecord[]>([]);
   const [restore, setRestore] = useState<DatabaseBackupRecord | null>(null);

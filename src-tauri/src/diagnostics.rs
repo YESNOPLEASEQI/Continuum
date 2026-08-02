@@ -217,7 +217,7 @@ mod tests {
                     .join("continuum.sqlite3")
                     .to_string_lossy()
                     .into_owned(),
-                schema_version: 3,
+                schema_version: database::LATEST_SCHEMA_VERSION,
                 integrity: "ok".into(),
                 size_bytes: 0,
                 orphan_nodes: 0,

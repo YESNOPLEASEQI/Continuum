@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { Badge, EmptyState, ErrorState, LoadingState, PageHeader, PathText } from "../components/ui";
 import { getAgentLabel } from "../config/agents";
 import { useAppStore } from "../store/appStore";
+import { useMajorSessionScan } from "../motion/useMajorSessionScan";
 
 function formatTime(value: string | null): string {
   if (!value) return "尚未扫描";
@@ -12,7 +13,8 @@ function formatTime(value: string | null): string {
 
 export default function DashboardPage() {
   const navigate = useNavigate();
-  const { dashboard, loading, error, scanning, loadDashboard, scanSessions } = useAppStore();
+  const { dashboard, loading, error, scanning, loadDashboard } = useAppStore();
+  const scanSessions = useMajorSessionScan();
   useEffect(() => { if (!dashboard) void loadDashboard(); }, [dashboard, loadDashboard]);
 
   if (loading && !dashboard) return <LoadingState label="正在初始化本地工作区" />;

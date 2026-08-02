@@ -1728,6 +1728,151 @@ textarea {
   justify-content: flex-end;
   margin-top: 22px;
 }
+.approval-backdrop {
+  z-index: 120;
+}
+.approval-dialog {
+  width: min(680px, 100%);
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+  border-color: #78564a;
+}
+.approval-dialog > header {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 12px;
+  align-items: center;
+}
+.approval-dialog > header h2 {
+  margin: 2px 0 0;
+}
+.approval-dialog > header > span {
+  color: #d6a875;
+  font-size: 10px;
+}
+.approval-mark {
+  border-color: #855f42;
+  background: #302319;
+  color: #efb36e;
+}
+.approval-kind {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 18px 0 8px;
+  color: #efb36e;
+  font-size: 12px;
+}
+.approval-details {
+  display: grid;
+  gap: 8px;
+  margin: 16px 0 0;
+}
+.approval-details > div {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: 10px;
+  padding: 9px 10px;
+  border: 1px solid #303b4a;
+  background: #10151c;
+}
+.approval-details dt {
+  color: #778397;
+  font-size: 9px;
+  text-transform: uppercase;
+}
+.approval-details dd {
+  min-width: 0;
+  margin: 0;
+}
+.approval-details code,
+.approval-details pre {
+  display: block;
+  overflow: auto;
+  max-height: 150px;
+  margin: 0;
+  color: #d6dde8;
+  font-size: 10px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.approval-request-body {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+  padding: 12px;
+  border: 1px solid #303b4a;
+  background: #10151c;
+}
+.approval-request-body h3,
+.approval-request-body legend {
+  margin: 0;
+  color: #d6dde8;
+  font-size: 11px;
+}
+.approval-request-body > pre {
+  overflow: auto;
+  max-height: 190px;
+  margin: 0;
+  color: #d6dde8;
+  font-size: 10px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.approval-request-body fieldset {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 10px;
+  border: 1px solid #303b4a;
+}
+.approval-form,
+.tool-input-questions {
+  gap: 12px;
+}
+.approval-field {
+  display: grid;
+  gap: 6px;
+  color: #aab5c4;
+  font-size: 10px;
+}
+.approval-field small,
+.approval-option small {
+  display: block;
+  color: #778397;
+  font-size: 9px;
+  font-weight: 400;
+}
+.approval-option {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  color: #cbd4e0;
+  font-size: 10px;
+  cursor: pointer;
+}
+.approval-option input {
+  margin-top: 2px;
+}
+.approval-request-body .muted {
+  color: #778397;
+}
+.approval-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 20px;
+}
+.approval-cancel {
+  color: #e47b80;
+}
+.approval-error {
+  margin-top: 12px !important;
+  color: #e47b80 !important;
+}
 .toast-region {
   position: fixed;
   z-index: 110;
@@ -3155,7 +3300,7 @@ textarea {
   grid-template-columns: 24px minmax(0, 1fr) auto;
   gap: 10px;
   align-items: center;
-  min-height: 94px;
+  min-height: 82px;
   padding: 12px;
   border-bottom: 1px solid #26303c;
 }
@@ -3205,8 +3350,7 @@ textarea {
   text-align: left;
   cursor: pointer;
 }
-.session-title strong,
-.session-title code {
+.session-title strong {
   display: block;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3215,11 +3359,6 @@ textarea {
 .session-title strong {
   color: #d8e1eb;
   font-size: 11px;
-}
-.session-title code {
-  margin-top: 4px;
-  color: #5c697c;
-  font-size: 8px;
 }
 .source-session-meta {
   display: flex;
@@ -3236,8 +3375,8 @@ textarea {
   align-items: center;
   max-width: 270px;
 }
-.source-session-meta .path-text {
-  max-width: 240px;
+.binding-status.bound {
+  color: #79b994;
 }
 .session-operations {
   display: flex;
@@ -3245,6 +3384,46 @@ textarea {
   gap: 5px;
   justify-content: flex-end;
   max-width: 500px;
+}
+.session-overflow {
+  position: relative;
+}
+.session-overflow > summary {
+  display: grid;
+  list-style: none;
+}
+.session-overflow > summary::-webkit-details-marker {
+  display: none;
+}
+.session-overflow-menu {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 6px);
+  right: 0;
+  display: grid;
+  min-width: 168px;
+  padding: 5px;
+  border: 1px solid #344154;
+  border-radius: 5px;
+  background: #111923;
+  box-shadow: 0 12px 30px rgb(0 0 0 / 35%);
+}
+.session-overflow-menu button {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: #aeb9c8;
+  text-align: left;
+}
+.session-overflow-menu button:hover,
+.session-overflow-menu button:focus-visible {
+  background: #1a2634;
+  color: #e1e8f0;
 }
 .button-quiet {
   min-height: 30px;

@@ -6,13 +6,13 @@ use crate::{
     security_scanner,
 };
 use chrono::{DateTime, Utc};
+use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
-use std::time::Duration;
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashMap},
     fs,
     path::{Path, PathBuf},
-    time::SystemTime,
+    time::{Duration, SystemTime},
 };
 
 pub struct CodexAdapter;
@@ -20,6 +20,58 @@ impl CodexAdapter {
     pub fn new() -> Self {
         Self
     }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CodexThreadMetadata {
+    pub title: String,
+    pub client_kind: String,
+}
+
+fn client_kind_from_thread_source(source: &str) -> String {
+    match source.trim().to_ascii_lowercase().as_str() {
+        "vscode" | "desktop" | "codex desktop" => "desktop",
+        "cli" | "exec" => "cli",
+        _ => "unknown",
+    }
+    .into()
+}
+
+fn read_codex_thread_metadata(
+    state_path: &Path,
+) -> AppResult<HashMap<String, CodexThreadMetadata>> {
+    if !state_path.is_file() {
+        return Ok(HashMap::new());
+    }
+    let conn = Connection::open_with_flags(
+        state_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    let mut statement = conn.prepare(
+        "SELECT id,CASE WHEN trim(COALESCE(name,''))<>'' THEN name ELSE title END,source FROM threads",
+    )?;
+    let rows = statement
+        .query_map([], |row| {
+            let id: String = row.get(0)?;
+            let title: String = row.get(1)?;
+            let source: String = row.get(2)?;
+            Ok((
+                id,
+                CodexThreadMetadata {
+                    title,
+                    client_kind: client_kind_from_thread_source(&source),
+                },
+            ))
+        })?
+        .collect::<Result<HashMap<_, _>, _>>()?;
+    Ok(rows)
+}
+
+pub(crate) fn load_codex_thread_metadata() -> HashMap<String, CodexThreadMetadata> {
+    dirs::home_dir()
+        .map(|home| home.join(".codex").join("state_5.sqlite"))
+        .and_then(|path| read_codex_thread_metadata(&path).ok())
+        .unwrap_or_default()
 }
 
 fn nested<'a>(value: &'a Value, pointers: &[&str]) -> Option<&'a Value> {
@@ -70,6 +122,72 @@ fn modified_time(path: &Path) -> String {
         .unwrap_or(SystemTime::now())
         .into();
     value.to_rfc3339()
+}
+
+pub(crate) fn is_protocol_injected_user_content(content: &str) -> bool {
+    let trimmed = content.trim_start();
+    [
+        "<recommended_plugins>",
+        "<environment_context>",
+        "<app-context>",
+        "<permissions",
+        "<collaboration_mode>",
+        "<apps_instructions>",
+        "<plugins_instructions>",
+        "<skills_instructions>",
+        "<INSTRUCTIONS>",
+    ]
+    .iter()
+    .any(|prefix| trimmed.starts_with(prefix))
+}
+
+pub(crate) fn client_kind_from_raw(raw: &[Value]) -> String {
+    let client = raw.iter().find_map(|value| {
+        nested(
+            value,
+            &[
+                "/payload/originator",
+                "/originator",
+                "/payload/client",
+                "/client",
+            ],
+        )
+        .and_then(Value::as_str)
+    });
+    match client.map(str::to_ascii_lowercase).as_deref() {
+        Some(value) if value.contains("desktop") => "desktop",
+        Some(value) if value.contains("cli") || value.contains("codex") => "cli",
+        _ => "unknown",
+    }
+    .to_owned()
+}
+
+pub(crate) fn first_real_user_request(messages: &[SessionMessage]) -> Option<&str> {
+    messages
+        .iter()
+        .filter(|message| matches!(message.role, MessageRole::User))
+        .map(|message| message.content.trim())
+        .find(|content| !content.is_empty() && !is_protocol_injected_user_content(content))
+}
+
+pub(crate) fn human_session_title(messages: &[SessionMessage]) -> Option<String> {
+    first_real_user_request(messages).map(|request| {
+        let first_line = request.lines().next().unwrap_or(request);
+        truncate(first_line, 72)
+    })
+}
+
+pub(crate) fn human_title_from_content(content: &str) -> Option<String> {
+    let content = content.trim();
+    if content.is_empty() || is_protocol_injected_user_content(content) {
+        return None;
+    }
+    Some(truncate(content.lines().next().unwrap_or(content), 72))
+}
+
+pub(crate) fn title_needs_human_request(title: &str) -> bool {
+    let title = title.trim_start();
+    title.starts_with('<') || title.starts_with("rollout-") || title == "未命名会话"
 }
 
 impl AgentAdapter for CodexAdapter {
@@ -192,18 +310,13 @@ impl AgentAdapter for CodexAdapter {
             .rev()
             .find_map(timestamp)
             .unwrap_or_else(|| modified_time(path));
-        let goal_summary = messages
-            .iter()
-            .find(|message| matches!(message.role, MessageRole::User))
-            .map(|message| truncate(&message.content, 320))
+        let goal_summary = first_real_user_request(&messages)
+            .map(|message| truncate(message, 320))
             .unwrap_or_default();
         let title = if goal_summary.is_empty() {
-            path.file_stem()
-                .and_then(|v| v.to_str())
-                .unwrap_or("未命名会话")
-                .to_owned()
+            "未命名会话".to_owned()
         } else {
-            truncate(goal_summary.lines().next().unwrap_or(&goal_summary), 72)
+            human_session_title(&messages).unwrap_or_else(|| "未命名会话".into())
         };
         let commands = self.extract_commands(&raw);
         let changed_files = self.extract_file_changes(&raw);
@@ -241,6 +354,9 @@ impl AgentAdapter for CodexAdapter {
             can_package: !messages.is_empty(),
             source_path: path.to_string_lossy().into_owned(),
             parse_warning: warning,
+            client_kind: client_kind_from_raw(&raw),
+            bound_project_id: None,
+            bound_project_name: None,
         };
         Ok(SessionDetail {
             summary,
@@ -451,5 +567,39 @@ mod tests {
         let (values, warnings) = parse_jsonl("{\"ok\":true}\nnot-json\n{\"still\":true}");
         assert_eq!(values.len(), 2);
         assert_eq!(warnings.len(), 1);
+    }
+
+    #[test]
+    fn uses_first_real_user_request_and_detects_desktop() {
+        let text = r#"{"type":"session_meta","payload":{"id":"desktop-session","originator":"Codex Desktop","timestamp":"2026-08-02T00:00:00Z"}}
+{"type":"response_item","payload":{"role":"user","content":[{"text":"<recommended_plugins>injected</recommended_plugins>"}]}}
+{"type":"response_item","payload":{"role":"user","content":[{"text":"<environment_context>injected</environment_context>"}]}}
+{"type":"response_item","payload":{"role":"user","content":[{"text":"修复 Source Sessions 标题"}]}}"#;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("desktop.jsonl");
+        fs::write(&path, text).unwrap();
+        let session = CodexAdapter::new().parse_session(&path).unwrap();
+        assert_eq!(session.summary.title, "修复 Source Sessions 标题");
+        assert_eq!(session.goal_summary, "修复 Source Sessions 标题");
+        assert_eq!(session.summary.client_kind, "desktop");
+    }
+
+    #[test]
+    fn reads_exact_codex_thread_title_and_source_from_state_database() {
+        let temporary = tempfile::tempdir().unwrap();
+        let state_path = temporary.path().join("state_5.sqlite");
+        let conn = Connection::open(&state_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE threads(id TEXT PRIMARY KEY,title TEXT NOT NULL,name TEXT,source TEXT NOT NULL);\
+             INSERT INTO threads VALUES('desktop-thread','优化 Source Sessions UI',NULL,'vscode');\
+             INSERT INTO threads VALUES('cli-thread','Generated title','手工标题','cli');",
+        )
+        .unwrap();
+        drop(conn);
+        let metadata = read_codex_thread_metadata(&state_path).unwrap();
+        assert_eq!(metadata["desktop-thread"].title, "优化 Source Sessions UI");
+        assert_eq!(metadata["desktop-thread"].client_kind, "desktop");
+        assert_eq!(metadata["cli-thread"].title, "手工标题");
+        assert_eq!(metadata["cli-thread"].client_kind, "cli");
     }
 }

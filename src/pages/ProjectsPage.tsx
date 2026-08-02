@@ -3,6 +3,9 @@ import {
   AlertTriangle,
   Archive,
   ArrowRight,
+  ArrowUpRight,
+  Clock3,
+  Database,
   GitFork,
   FolderGit2,
   FolderKanban,
@@ -14,8 +17,11 @@ import {
   RadioTower,
   RotateCcw,
   Trash2,
+  X,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useGSAP } from "@gsap/react";
+import gsap from "gsap";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { appApi } from "../api/bridge";
 import {
@@ -27,8 +33,10 @@ import {
   PageHeader,
   PathText,
 } from "../components/ui";
+import { ProjectArchiveDeck } from "../components/ProjectArchiveDeck";
 import { getAgentLabel } from "../config/agents";
 import { useAppStore } from "../store/appStore";
+import { useContinuumMotion } from "../motion/ContinuumMotion";
 import type {
   ContextHealthLevel,
   CreateProjectInput,
@@ -53,8 +61,11 @@ const healthLabels: Record<ContextHealthLevel, string> = {
 
 export default function ProjectsPage() {
   const navigate = useNavigate();
+  const pageRef = useRef<HTMLDivElement>(null);
+  const overviewTimeline = useRef<gsap.core.Timeline | null>(null);
+  const { navigateMajor } = useContinuumMotion();
   const [params, setParams] = useSearchParams();
-  const { projects, loading, error, loadProjects, notify } = useAppStore();
+  const { projects, sessions, loading, error, loadProjects, loadSessions, notify } = useAppStore();
   const [creating, setCreating] = useState(params.get("create") === "1");
   const [input, setInput] = useState<CreateProjectInput>(initialInput);
   const [constraintText, setConstraintText] = useState("");
@@ -63,12 +74,67 @@ export default function ProjectsPage() {
     null,
   );
   const [deleting, setDeleting] = useState<UnifiedProjectSummary | null>(null);
+  const [overview, setOverview] = useState<UnifiedProjectSummary | null>(null);
+  const activeProjects = useMemo(
+    () => projects.filter((item) => !item.archived),
+    [projects],
+  );
   useEffect(() => {
-    void loadProjects();
-  }, [loadProjects]);
+    void Promise.all([loadProjects(), loadSessions()]);
+  }, [loadProjects, loadSessions]);
   useEffect(() => {
     if (params.get("create") === "1") setCreating(true);
   }, [params]);
+
+  useGSAP(
+    () => {
+      const reduced = window.matchMedia?.(
+        "(prefers-reduced-motion: reduce)",
+      )?.matches;
+      gsap.set(".project-overview-panel", {
+        yPercent: reduced ? 0 : 112,
+        rotationX: reduced ? 0 : -7,
+        transformOrigin: "50% 100%",
+        autoAlpha: 0,
+      });
+      overviewTimeline.current = gsap
+        .timeline({ paused: true, defaults: { overwrite: "auto" } })
+        .set(".project-overview-layer", { pointerEvents: "auto" })
+        .to(
+          ".project-overview-scrim",
+          { autoAlpha: 1, duration: reduced ? 0 : 0.28, ease: "power2.out" },
+          0,
+        )
+        .to(
+          ".project-overview-panel",
+          {
+            yPercent: 0,
+            rotationX: 0,
+            autoAlpha: 1,
+            duration: reduced ? 0 : 0.58,
+            ease: "power3.out",
+          },
+          0,
+        );
+      overviewTimeline.current.eventCallback("onReverseComplete", () => {
+        gsap.set(".project-overview-layer", { pointerEvents: "none" });
+        setOverview(null);
+      });
+    },
+    { scope: pageRef },
+  );
+
+  function openOverview(project: UnifiedProjectSummary) {
+    const alreadyOpen = Boolean(overview);
+    setOverview(project);
+    if (!alreadyOpen) {
+      requestAnimationFrame(() => overviewTimeline.current?.play(0));
+    }
+  }
+
+  function closeOverview() {
+    overviewTimeline.current?.reverse();
+  }
 
   async function chooseProjectPath() {
     const selected = await open({
@@ -157,7 +223,56 @@ export default function ProjectsPage() {
   }
 
   return (
-    <div className="page projects-page">
+    <div ref={pageRef} className="page projects-page continuum-home">
+      <ProjectArchiveDeck
+        projects={projects}
+        sessions={sessions}
+        loading={loading}
+        error={error}
+        onRetry={() => void Promise.all([loadProjects(), loadSessions()])}
+        onOpenProject={openOverview}
+        onOpenSession={(session) => navigate(`/sessions/${session.id}`)}
+        onBrowseSessions={() => navigate("/sessions")}
+        onCreateProject={() => setCreating(true)}
+        onImportProject={() => {
+          setCreating(true);
+          void chooseProjectPath();
+        }}
+      />
+      <section className="continuum-entry" aria-labelledby="continuum-entry-title">
+        <div className="entry-meta entry-reveal">
+          <span>本地 Codex 会话编排</span>
+          <span>SQLite / App Server / CLI fallback</span>
+        </div>
+        <div className="entry-wordmark" id="continuum-entry-title" role="heading" aria-level={1} aria-label="Continuum">
+          {Array.from("CONTINUUM").map((letter, index) => (
+            <span className="entry-letter" aria-hidden="true" key={`${letter}-${index}`}>
+              {letter}
+            </span>
+          ))}
+        </div>
+        <div className="entry-footer entry-reveal">
+          <div>
+            <p>把分散的会话，组织成一条可继续的工作脉络。</p>
+            <small>上下文留在本机。Fresh 不继承旧会话历史。</small>
+          </div>
+          <div className="entry-actions">
+            <button
+              className="entry-link"
+              onClick={() => navigate("/sessions")}
+            >
+              浏览来源会话 <ArrowUpRight size={14} />
+            </button>
+            <button
+              className="entry-primary"
+              disabled={!activeProjects[0]?.pathExists}
+              onClick={() => activeProjects[0] && openOverview(activeProjects[0])}
+            >
+              进入最近项目 <ArrowRight size={14} />
+            </button>
+          </div>
+        </div>
+      </section>
       <PageHeader
         eyebrow="UNIFIED PROJECTS"
         title="统一项目"
@@ -188,7 +303,7 @@ export default function ProjectsPage() {
         <LoadingState label="正在读取统一项目" />
       ) : error ? (
         <ErrorState message={error} onRetry={() => void loadProjects()} />
-      ) : !projects.filter((item) => !item.archived).length ? (
+      ) : !activeProjects.length ? (
         <EmptyState
           icon={<FolderKanban size={24} />}
           title="还没有统一项目"
@@ -203,19 +318,20 @@ export default function ProjectsPage() {
           }
         />
       ) : (
-        <div className="project-list">
-          {projects
-            .filter((item) => !item.archived)
-            .map((project) => (
-              <article className="project-card" key={project.id}>
+        <div className="project-index" aria-label="统一项目索引">
+          <div className="project-index-head entry-reveal">
+            <span>INDEX</span><span>PROJECT / CURRENT THREAD</span><span>UPDATED</span><span>STATE</span>
+          </div>
+          {activeProjects.map((project, projectIndex) => (
+              <article className="project-card project-index-row entry-reveal" key={project.id}>
                 <div className="project-mark">
-                  <FolderGit2 size={20} />
-                  <span>{project.sessionCount}</span>
+                  <span>{String(projectIndex + 1).padStart(2, "0")}</span>
+                  <FolderGit2 size={17} />
                 </div>
                 <div className="project-main">
                   <div className="project-title-row">
                     <button
-                      onClick={() => navigate(`/projects/${project.id}/chat`)}
+                      onClick={() => openOverview(project)}
                     >
                       <strong>{project.name}</strong>
                     </button>
@@ -247,7 +363,11 @@ export default function ProjectsPage() {
                     </span>
                   </div>
                 </div>
-                <div className="project-actions">
+                <div className="project-updated">
+                  <Clock3 size={13} />
+                  <time>{new Date(project.updatedAt).toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" })}</time>
+                </div>
+                <div className="project-actions project-row-actions">
                   {!project.pathExists && (
                     <button
                       className="button button-secondary"
@@ -258,32 +378,12 @@ export default function ProjectsPage() {
                     </button>
                   )}
                   <button
-                    className="button button-secondary"
-                    onClick={() => void renameProject(project)}
-                  >
-                    <Pencil size={14} />
-                    重命名
-                  </button>
-                  <button
-                    className="button button-secondary"
-                    onClick={() => setArchiving(project)}
-                  >
-                    <Archive size={14} />
-                    归档
-                  </button>
-                  <button
-                    className="button button-secondary"
-                    onClick={() => navigate(`/projects/${project.id}/context`)}
-                  >
-                    <GitFork size={14} />
-                    检查上下文
-                  </button>
-                  <button
-                    className="button button-primary"
-                    onClick={() => navigate(`/projects/${project.id}/chat`)}
+                    className="project-open"
+                    onClick={() => openOverview(project)}
                     disabled={!project.pathExists}
+                    aria-label={`查看 ${project.name} 概览`}
                   >
-                    打开对话 <ArrowRight size={14} />
+                    <ArrowUpRight size={17} />
                   </button>
                 </div>
               </article>
@@ -319,6 +419,57 @@ export default function ProjectsPage() {
             ))}
         </section>
       )}
+      <div className="project-overview-layer" aria-hidden={!overview}>
+        <button
+          className="project-overview-scrim"
+          aria-label="关闭项目概览"
+          onClick={closeOverview}
+        />
+        <section className="project-overview-panel" role="dialog" aria-modal="true" aria-label={overview ? `${overview.name} 项目概览` : "项目概览"}>
+          {overview && (
+            <>
+              <header>
+                <div>
+                  <span>PROJECT OVERVIEW / {overview.currentBranchName}</span>
+                  <h2>{overview.name}</h2>
+                </div>
+                <button aria-label="关闭项目概览" onClick={closeOverview}><X size={18} /></button>
+              </header>
+              <div className="project-overview-body">
+                <div className="overview-thesis">
+                  <p>{overview.currentTask || overview.goal}</p>
+                  <PathText value={overview.projectPath} />
+                </div>
+                <dl>
+                  <div><dt>当前分支</dt><dd>{overview.currentBranchName}</dd></div>
+                  <div><dt>来源会话</dt><dd>{overview.sessionCount}</dd></div>
+                  <div><dt>Context budget</dt><dd>{Math.round(overview.health.thresholdRatio * 100)}%</dd></div>
+                  <div><dt>本地状态</dt><dd>{overview.pathExists ? "READY" : "PATH MISSING"}</dd></div>
+                </dl>
+                <div className="overview-health-line">
+                  <HealthBadge level={overview.health.level} />
+                  <span>{overview.health.reasons[0] || "上下文状态稳定"}</span>
+                </div>
+              </div>
+              <footer>
+                <div className="overview-quiet-actions">
+                  <button onClick={() => void renameProject(overview)}><Pencil size={13} />重命名</button>
+                  <button onClick={() => setArchiving(overview)}><Archive size={13} />归档</button>
+                  <button onClick={() => navigate(`/projects/${overview.id}/context`)}><GitFork size={13} />Context</button>
+                </div>
+                <button
+                  className="overview-enter"
+                  disabled={!overview.pathExists}
+                  onClick={() => void navigateMajor(`/projects/${overview.id}/chat`, `进入 ${overview.name}`)}
+                >
+                  打开项目工作区 <ArrowRight size={15} />
+                </button>
+              </footer>
+              <div className="overview-watermark" aria-hidden="true"><Database size={18} />CONTINUUM / LOCAL</div>
+            </>
+          )}
+        </section>
+      </div>
       {creating && (
         <div
           className="dialog-backdrop"

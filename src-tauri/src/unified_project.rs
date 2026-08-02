@@ -1024,37 +1024,45 @@ pub(crate) fn append_new_nodes(
     for (index, message) in detail.messages.iter().enumerate() {
         let source_id = format!("{}:{}", detail.summary.id, message.id);
         let node_id = format!("node:{project_id}:{branch_id}:{source_id}");
+        conn.execute("INSERT INTO source_messages(id,source_session_id,role,content,created_at,raw_index) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(id) DO UPDATE SET role=excluded.role,content=excluded.content,created_at=COALESCE(excluded.created_at,source_messages.created_at)",params![source_id,detail.summary.id,format!("{:?}",message.role).to_lowercase(),message.content,message.timestamp,index as i64])?;
         let exists: i64 = conn.query_row(
             "SELECT COUNT(*) FROM conversation_nodes WHERE id=?1",
             params![node_id],
             |row| row.get(0),
         )?;
         if exists > 0 {
+            conn.execute(
+                "UPDATE conversation_nodes SET content=?1,status='active',metadata_json=?2,imported_at=?3 WHERE id=?4",
+                params![message.content,json!({"role":format!("{:?}",message.role).to_lowercase(),"rawIndex":index}).to_string(),now(),node_id],
+            )?;
             continue;
         }
-        conn.execute("INSERT OR IGNORE INTO source_messages(id,source_session_id,role,content,created_at,raw_index) VALUES(?1,?2,?3,?4,?5,?6)",params![source_id,detail.summary.id,format!("{:?}",message.role).to_lowercase(),message.content,message.timestamp,index as i64])?;
-        conn.execute("INSERT INTO conversation_nodes(id,project_id,parent_node_id,branch_id,source_agent,source_session_id,node_type,content,created_at,importance,status,metadata_json) VALUES(?1,?2,?3,?4,'codex',?5,'message',?6,?7,50,'active',?8)",params![node_id,project_id,parent,branch_id,detail.summary.id,message.content,message.timestamp.clone().unwrap_or_else(now),json!({"role":format!("{:?}",message.role).to_lowercase(),"rawIndex":index}).to_string()])?;
+        conn.execute("INSERT INTO conversation_nodes(id,project_id,parent_node_id,branch_id,source_agent,source_session_id,source_message_id,node_type,content,created_at,importance,status,metadata_json,imported_at) VALUES(?1,?2,?3,?4,'codex',?5,?6,'message',?7,?8,50,'active',?9,?10)",params![node_id,project_id,parent,branch_id,detail.summary.id,message.id,message.content,message.timestamp.clone().unwrap_or_else(now),json!({"role":format!("{:?}",message.role).to_lowercase(),"rawIndex":index}).to_string(),now()])?;
         parent = Some(node_id);
         inserted += 1;
     }
     for (index, tool) in detail.tool_calls.iter().enumerate() {
         let source_id = format!("{}:{}", detail.summary.id, tool.id);
         let node_id = format!("tool:{project_id}:{branch_id}:{source_id}");
-        let exists: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM conversation_nodes WHERE id=?1",
-            params![node_id],
-            |row| row.get(0),
-        )?;
-        if exists > 0 {
-            continue;
-        }
-        conn.execute("INSERT OR IGNORE INTO tool_calls_v2(id,source_session_id,name,arguments,status,output,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![source_id,detail.summary.id,tool.name,tool.arguments,format!("{:?}",tool.status).to_lowercase(),tool.output,tool.timestamp])?;
+        conn.execute("INSERT INTO tool_calls_v2(id,source_session_id,name,arguments,status,output,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(id) DO UPDATE SET name=excluded.name,arguments=excluded.arguments,status=excluded.status,output=excluded.output,created_at=COALESCE(excluded.created_at,tool_calls_v2.created_at)",params![source_id,detail.summary.id,tool.name,tool.arguments,format!("{:?}",tool.status).to_lowercase(),tool.output,tool.timestamp])?;
         let content = format!(
             "{}\n参数：{}\n结果：{}",
             tool.name,
             tool.arguments,
             tool.output.as_deref().unwrap_or("未记录")
         );
+        let exists: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM conversation_nodes WHERE id=?1",
+            params![node_id],
+            |row| row.get(0),
+        )?;
+        if exists > 0 {
+            conn.execute(
+                "UPDATE conversation_nodes SET content=?1,status=?2,metadata_json=?3,imported_at=?4 WHERE id=?5",
+                params![content,if matches!(tool.status,ToolStatus::Failed){"active"}else{"completed"},json!({"toolName":tool.name,"index":index,"collapsed":true}).to_string(),now(),node_id],
+            )?;
+            continue;
+        }
         conn.execute("INSERT INTO conversation_nodes(id,project_id,parent_node_id,branch_id,source_agent,source_session_id,source_message_id,node_type,content,created_at,importance,status,metadata_json,imported_at) VALUES(?1,?2,?3,?4,'codex',?5,?6,'tool_call',?7,?8,30,?9,?10,?11)",params![node_id,project_id,parent,branch_id,detail.summary.id,tool.id,content,tool.timestamp.clone().unwrap_or_else(now),if matches!(tool.status,ToolStatus::Failed){"active"}else{"completed"},json!({"toolName":tool.name,"index":index,"collapsed":true}).to_string(),now()])?;
         parent = Some(node_id);
         inserted += 1;
@@ -1137,6 +1145,9 @@ mod tests {
                 can_package: true,
                 source_path: repo.join("s.jsonl").to_string_lossy().into_owned(),
                 parse_warning: None,
+                client_kind: "cli".into(),
+                bound_project_id: None,
+                bound_project_name: None,
             },
             goal_summary: "Continue work".into(),
             messages: vec![SessionMessage {

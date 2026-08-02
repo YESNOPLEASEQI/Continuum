@@ -14,7 +14,9 @@ import {
   Waypoints,
   XCircle,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useGSAP } from "@gsap/react";
+import gsap from "gsap";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { appApi } from "../api/bridge";
 import {
@@ -51,11 +53,27 @@ const statusLabels: Record<string, string> = {
   cancelled: "已取消",
 };
 
+const statusDescriptions: Record<string, string> = {
+  compiling_context: "Context Compiler 正在根据当前 branch 和保留策略生成确定性上下文。",
+  writing_context: "正在把长上下文写入项目内 .continuum/continuations Markdown。",
+  preparing_launch: "上下文哈希和不可变 Profile 快照已准备，尚未创建目标 thread。",
+  launching: "正在优先通过 Codex App Server 创建全新 thread；不调用 resume 或 fork。",
+  waiting_for_session: "CLI fallback 已启动，正在按 marker、cwd、时间和未绑定状态严格检测。",
+  candidate_sessions_found: "检测到多个真实候选，需要人工确认，Continuum 不会猜测绑定。",
+  binding: "正在把已确认的新 session 绑定回当前项目和 branch。",
+  manual_binding_required: "自动检测没有得到唯一候选，请选择实际新建的 Codex 会话。",
+  listening: "新 session 已绑定，App Server 通知或 JSONL 增量监听正在写入统一时间线。",
+  launch_failed: "启动链路已停止；错误和 partial thread 状态保留用于安全重试。",
+  detection_timeout: "检测窗口结束但未发现唯一新会话；没有自动绑定最新文件。",
+  cancelled: "续接已取消，已创建的记录仍可用于审计和清理上下文文件。",
+};
+
 export default function NewContinuationPage() {
   const { id = "" } = useParams();
   const [params] = useSearchParams();
   const navigate = useNavigate();
   const notify = useAppStore((state) => state.notify);
+  const statusRef = useRef<HTMLElement>(null);
   const [project, setProject] = useState<UnifiedProjectDetail | null>(null);
   const [compiled, setCompiled] = useState<CompiledContext | null>(null);
   const [record, setRecord] = useState<ContinuationRecord | null>(null);
@@ -142,6 +160,30 @@ export default function NewContinuationPage() {
     }, 2000);
     return () => window.clearInterval(timer);
   }, [record?.id, record?.status, notify]);
+  useGSAP(
+    () => {
+      const activeStep = statusRef.current?.querySelector(
+        ".continuation-steps .active",
+      );
+      if (!activeStep) return;
+      const reduced = window.matchMedia?.(
+        "(prefers-reduced-motion: reduce)",
+      )?.matches;
+      gsap.fromTo(
+        activeStep,
+        { x: reduced ? 0 : -8, autoAlpha: reduced ? 1 : 0.55 },
+        {
+          x: 0,
+          autoAlpha: 1,
+          duration: reduced ? 0 : 0.36,
+          ease: "power3.out",
+          overwrite: true,
+          clearProps: "transform,opacity,visibility",
+        },
+      );
+    },
+    { dependencies: [stage], scope: statusRef, revertOnUpdate: true },
+  );
   async function launch() {
     setBusy(true);
     setStage("compiling_context");
@@ -405,7 +447,7 @@ export default function NewContinuationPage() {
         </section>
       </div>
       {(record || busy) && (
-        <section className="continuation-status">
+        <section ref={statusRef} className="continuation-status">
           <header>
             <div>
               <p className="eyebrow">AUTOMATIC HANDOFF</p>
@@ -427,6 +469,9 @@ export default function NewContinuationPage() {
               </Badge>
             )}
           </header>
+          <p className="continuation-stage-detail">
+            {statusDescriptions[stage] ?? "正在读取持久状态机的当前阶段。"}
+          </p>
           <div className="continuation-steps">
             {[
               "正在编译上下文",

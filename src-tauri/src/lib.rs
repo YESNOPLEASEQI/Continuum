@@ -1,4 +1,5 @@
 mod agent_adapters;
+mod app_server_persistence;
 mod claude_adapter;
 mod codex_adapter;
 mod codex_app_server;
@@ -24,12 +25,13 @@ mod session_scanner;
 mod settings;
 mod unified_project;
 
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 use tauri::Manager;
 
 pub struct AppState {
     pub db_path: PathBuf,
     pub data_dir: PathBuf,
+    pub app_server: Arc<codex_app_server::AppServerManager>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -49,7 +51,11 @@ pub fn run() {
             let settings =
                 database::get_settings(&db_path, &data_dir).map_err(|error| error.to_string())?;
             std::fs::create_dir_all(&settings.package_output_path)?;
-            app.manage(AppState { db_path, data_dir });
+            app.manage(AppState {
+                db_path,
+                data_dir,
+                app_server: Arc::new(codex_app_server::AppServerManager::default()),
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -118,6 +124,8 @@ pub fn run() {
             commands::bind_continuation_session,
             commands::cancel_continuation,
             commands::retry_continuation,
+            commands::list_app_server_requests,
+            commands::respond_app_server_request,
             commands::recover_continuations,
             commands::cleanup_continuation_context,
             commands::launch_source_session,
@@ -293,7 +301,9 @@ mod integration_tests {
             .compiled_text
             .contains("Continue work in a clean Codex session"));
 
-        let record = continuation::create(&db_path, temp.path(), &options, false).unwrap();
+        let app_server = Arc::new(codex_app_server::AppServerManager::default());
+        let record =
+            continuation::create(&db_path, temp.path(), &options, false, &app_server).unwrap();
         assert_eq!(record.status, "preparing_launch");
         assert!(std::path::Path::new(&record.bootstrap_file).is_file());
         assert!(fs::read_to_string(&record.bootstrap_file)
@@ -462,7 +472,9 @@ mod integration_tests {
             include_skills: false,
             include_mcp: false,
         };
-        let continuation = continuation::create(&db_path, temp.path(), &options, true).unwrap();
+        let app_server = Arc::new(codex_app_server::AppServerManager::default());
+        let continuation =
+            continuation::create(&db_path, temp.path(), &options, true, &app_server).unwrap();
         assert_eq!(continuation.status, "listening");
         let target_session_id = continuation
             .target_session_id

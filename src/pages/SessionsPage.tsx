@@ -1,14 +1,15 @@
 import {
   Clipboard,
-  GitBranch,
+  CheckCircle2,
+  FolderKanban,
   Link2,
+  MoreHorizontal,
   Play,
   RadioTower,
   RefreshCw,
   Search,
   Sparkles,
   Split,
-  Waypoints,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
@@ -19,10 +20,9 @@ import {
   ErrorState,
   LoadingState,
   PageHeader,
-  PathText,
 } from "../components/ui";
-import { getAgentLabel } from "../config/agents";
 import { useAppStore } from "../store/appStore";
+import { useMajorSessionScan } from "../motion/useMajorSessionScan";
 import type { SessionSummary } from "../types/models";
 
 export default function SessionsPage() {
@@ -36,9 +36,9 @@ export default function SessionsPage() {
     error,
     loadSessions,
     loadProjects,
-    scanSessions,
     notify,
   } = useAppStore();
+  const scanSessions = useMajorSessionScan();
   const [query, setQuery] = useState("");
   const [visibleCount, setVisibleCount] = useState(30);
   const [projectId, setProjectId] = useState(params.get("project") ?? "");
@@ -50,7 +50,7 @@ export default function SessionsPage() {
     () =>
       sessions
         .filter((item) =>
-          `${item.title} ${item.id} ${item.workingDirectory ?? ""}`
+          `${item.title} ${item.boundProjectName ?? ""} ${item.workingDirectory ?? ""}`
             .toLowerCase()
             .includes(query.toLowerCase()),
         )
@@ -59,6 +59,14 @@ export default function SessionsPage() {
   );
   useEffect(() => setVisibleCount(30), [query]);
   const renderedSessions = visible.slice(0, visibleCount);
+  const workspaceName = (path: string | null) =>
+    path?.split(/[\\/]/).filter(Boolean).at(-1) ?? "未记录项目";
+  const clientLabel = (session: SessionSummary) =>
+    session.clientKind === "desktop"
+      ? "Codex Desktop"
+      : session.clientKind === "cli"
+        ? "Codex CLI"
+        : "Codex";
   async function bind(ids: string[]) {
     if (!projectId) {
       notify({ tone: "info", title: "请选择统一项目" });
@@ -85,6 +93,15 @@ export default function SessionsPage() {
     session: SessionSummary,
     target: "codex" | "claude" = "codex",
   ) {
+    if (!projectId && session.boundProjectId) {
+      const project = projects.find((item) => item.id === session.boundProjectId);
+      if (project) {
+        navigate(
+          `/projects/${project.id}/continuation?branch=${project.currentBranchId}&target=${target}`,
+        );
+        return;
+      }
+    }
     const project = await bind([session.id]);
     if (project)
       navigate(
@@ -141,7 +158,7 @@ export default function SessionsPage() {
           <input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="搜索标题、Session ID 或工作目录"
+            placeholder="搜索会话标题或项目"
           />
         </label>
         <label>
@@ -228,59 +245,53 @@ export default function SessionsPage() {
                   onClick={() => navigate(`/sessions/${session.id}`)}
                 >
                   <strong>{session.title}</strong>
-                  <code>{session.id}</code>
                 </button>
                 <div className="source-session-meta">
-                  <Badge tone="signal">{getAgentLabel(session.agent)}</Badge>
+                  <Badge tone="signal">{clientLabel(session)}</Badge>
                   <span>
-                    <GitBranch size={12} />
-                    <PathText value={session.workingDirectory} />
-                  </span>
-                  <span>
-                    {session.messageCount} 消息 · {session.toolCallCount} 工具
+                    <FolderKanban size={12} />
+                    {session.boundProjectName ?? workspaceName(session.workingDirectory)}
                   </span>
                   <span>
                     {new Date(session.updatedAt).toLocaleString("zh-CN")}
+                  </span>
+                  <span className={session.boundProjectId ? "binding-status bound" : "binding-status"}>
+                    <CheckCircle2 size={12} />
+                    {session.boundProjectId ? "已绑定" : "未绑定"}
                   </span>
                 </div>
               </div>
               <div className="session-operations">
                 <button
-                  className="button button-quiet"
-                  onClick={() => void launchSource(session, "resume")}
-                >
-                  <Play size={13} />
-                  继续原会话
-                </button>
-                <button
                   className="button button-primary"
                   onClick={() => void fresh(session)}
-                  disabled={!projectId}
+                  disabled={!projectId && !session.boundProjectId}
                 >
                   <Sparkles size={13} />
-                  压缩后新建会话
+                  新建续接
                 </button>
-                <button
-                  className="button button-quiet"
-                  onClick={() => void launchSource(session, "fork")}
-                >
-                  <Split size={13} />
-                  从此处分支
-                </button>
-                <span className="future-agent-label">
-                  <Waypoints size={13} />
-                  其他 Agent：未来扩展
-                </span>
-                <button
-                  className="icon-button"
-                  title="复制会话路径"
-                  onClick={async () => {
-                    await navigator.clipboard.writeText(session.sourcePath);
-                    notify({ tone: "success", title: "会话路径已复制" });
-                  }}
-                >
-                  <Clipboard size={14} />
-                </button>
+                <details className="session-overflow">
+                  <summary className="icon-button" aria-label={`${session.title}的更多操作`}>
+                    <MoreHorizontal size={16} />
+                  </summary>
+                  <div className="session-overflow-menu">
+                    <button onClick={() => void launchSource(session, "resume")}>
+                      <Play size={13} />继续原会话
+                    </button>
+                    <button onClick={() => void launchSource(session, "fork")}>
+                      <Split size={13} />从此处分支
+                    </button>
+                    <button onClick={() => navigate(`/sessions/${session.id}`)}>
+                      查看详情
+                    </button>
+                    <button onClick={async () => {
+                      await navigator.clipboard.writeText(session.sourcePath);
+                      notify({ tone: "success", title: "会话路径已复制" });
+                    }}>
+                      <Clipboard size={13} />复制会话路径
+                    </button>
+                  </div>
+                </details>
               </div>
             </article>
           ))}

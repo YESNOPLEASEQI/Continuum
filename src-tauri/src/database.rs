@@ -7,7 +7,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub const LATEST_SCHEMA_VERSION: i64 = 3;
+pub const LATEST_SCHEMA_VERSION: i64 = 4;
 
 pub const MIGRATION_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
@@ -219,6 +219,39 @@ CREATE TABLE IF NOT EXISTS diagnostics_events (
 CREATE INDEX IF NOT EXISTS idx_diagnostics_recent ON diagnostics_events(created_at DESC);
 "#;
 
+const MIGRATION_V4_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS app_server_notifications (
+  notification_hash TEXT PRIMARY KEY, process_id INTEGER NOT NULL,
+  continuation_id TEXT NOT NULL, project_id TEXT NOT NULL,
+  thread_id TEXT, turn_id TEXT, item_id TEXT, method TEXT NOT NULL,
+  emitted_at_ms INTEGER, processed_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_app_server_notifications_thread
+  ON app_server_notifications(thread_id,processed_at);
+
+CREATE TABLE IF NOT EXISTS app_server_turns (
+  thread_id TEXT NOT NULL, turn_id TEXT NOT NULL, status TEXT NOT NULL,
+  started_at TEXT, completed_at TEXT, error_json TEXT,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(thread_id,turn_id)
+);
+CREATE INDEX IF NOT EXISTS idx_app_server_turns_thread
+  ON app_server_turns(thread_id,updated_at);
+
+CREATE TABLE IF NOT EXISTS app_server_items (
+  thread_id TEXT NOT NULL, turn_id TEXT NOT NULL, item_id TEXT NOT NULL,
+  item_type TEXT NOT NULL, status TEXT NOT NULL,
+  role TEXT, content TEXT NOT NULL DEFAULT '',
+  tool_name TEXT, arguments TEXT, output TEXT,
+  started_at TEXT, completed_at TEXT, last_event_ms INTEGER,
+  jsonl_verified INTEGER NOT NULL DEFAULT 0,
+  jsonl_source_id TEXT, updated_at TEXT NOT NULL,
+  PRIMARY KEY(thread_id,item_id)
+);
+CREATE INDEX IF NOT EXISTS idx_app_server_items_reconcile
+  ON app_server_items(thread_id,jsonl_verified,started_at,item_id);
+"#;
+
 fn column_exists(conn: &Connection, table: &str, column: &str) -> AppResult<bool> {
     let mut statement = conn.prepare(&format!("PRAGMA table_info({table})"))?;
     let columns = statement
@@ -248,6 +281,16 @@ fn pre_migration_backup(
     }
     conn.execute_batch("PRAGMA wal_checkpoint(FULL);")?;
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let database_size = fs::metadata(path)?.len();
+    let required_space = database_size.saturating_add(128 * 1024 * 1024);
+    let available_space = available_disk_space(parent)?;
+    if available_space < required_space {
+        return Err(AppError::Message(format!(
+            "数据库迁移需要先创建可恢复备份，但磁盘空间不足：至少需要 {} MiB，当前约 {} MiB 可用",
+            required_space.div_ceil(1024 * 1024),
+            available_space / (1024 * 1024)
+        )));
+    }
     let backup_dir = parent.join("backups");
     fs::create_dir_all(&backup_dir)?;
     let stem = path
@@ -256,8 +299,38 @@ fn pre_migration_backup(
         .unwrap_or("continuum");
     let timestamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
     let backup = backup_dir.join(format!("{stem}-pre-v{target_version}-{timestamp}.sqlite3"));
-    fs::copy(path, &backup)?;
+    if let Err(error) = fs::copy(path, &backup) {
+        let _ = fs::remove_file(&backup);
+        return Err(AppError::Io(error));
+    }
     Ok(Some(backup))
+}
+
+#[cfg(windows)]
+fn available_disk_space(path: &Path) -> AppResult<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+
+    let mut wide = path.as_os_str().encode_wide().collect::<Vec<_>>();
+    wide.push(0);
+    let mut available = 0_u64;
+    let result = unsafe {
+        GetDiskFreeSpaceExW(
+            wide.as_ptr(),
+            &mut available,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    if result == 0 {
+        return Err(AppError::Io(std::io::Error::last_os_error()));
+    }
+    Ok(available)
+}
+
+#[cfg(not(windows))]
+fn available_disk_space(_path: &Path) -> AppResult<u64> {
+    Ok(u64::MAX)
 }
 
 fn apply_v3(conn: &Connection) -> AppResult<()> {
@@ -407,9 +480,19 @@ fn apply_v3(conn: &Connection) -> AppResult<()> {
     conn.execute_batch(MIGRATION_V3_SQL)?;
     conn.execute(
         "INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(?1,?2)",
-        params![LATEST_SCHEMA_VERSION, chrono::Utc::now().to_rfc3339()],
+        params![3, chrono::Utc::now().to_rfc3339()],
     )?;
     conn.execute_batch("PRAGMA user_version=3;")?;
+    Ok(())
+}
+
+fn apply_v4(conn: &Connection) -> AppResult<()> {
+    conn.execute_batch(MIGRATION_V4_SQL)?;
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(4,?1)",
+        params![chrono::Utc::now().to_rfc3339()],
+    )?;
+    conn.execute_batch("PRAGMA user_version=4;")?;
     Ok(())
 }
 
@@ -434,27 +517,33 @@ pub fn initialize(path: &Path) -> AppResult<()> {
         params![chrono::Utc::now().to_rfc3339()],
     )?;
     transaction.commit()?;
-    let migrated: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM schema_migrations WHERE version=?1",
-        params![LATEST_SCHEMA_VERSION],
+    let current_version: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(version),0) FROM schema_migrations",
+        [],
         |row| row.get(0),
     )?;
-    if migrated == 0 {
+    if current_version < LATEST_SCHEMA_VERSION {
         let migration_backup = if existed {
             pre_migration_backup(&conn, path, LATEST_SCHEMA_VERSION)?
         } else {
             None
         };
         let transaction = conn.unchecked_transaction()?;
-        apply_v3(&transaction)?;
+        if current_version < 3 {
+            apply_v3(&transaction)?;
+        }
+        if current_version < 4 {
+            apply_v4(&transaction)?;
+        }
         transaction.commit()?;
         if let Some(backup) = migration_backup {
             let size = fs::metadata(&backup)?.len();
             conn.execute(
-                "INSERT INTO database_backups(id,path,reason,schema_version,size_bytes,sha256,created_at) VALUES(?1,?2,'pre_migration',2,?3,?4,?5)",
+                "INSERT INTO database_backups(id,path,reason,schema_version,size_bytes,sha256,created_at) VALUES(?1,?2,'pre_migration',?3,?4,?5,?6)",
                 params![
                     uuid::Uuid::new_v4().to_string(),
                     backup.to_string_lossy(),
+                    current_version,
                     size as i64,
                     filesystem::sha256_file(&backup)?,
                     chrono::Utc::now().to_rfc3339()
@@ -556,12 +645,24 @@ pub fn upsert_session(db_path: &Path, detail: &SessionDetail) -> AppResult<()> {
     Ok(())
 }
 
-const SESSION_SUMMARY_SELECT: &str = "SELECT s.id,s.title,s.agent_type,s.created_at,s.updated_at,s.working_directory,s.git_repository,(SELECT COUNT(*) FROM session_messages m WHERE m.session_id=s.id),(SELECT COUNT(*) FROM session_tool_calls t WHERE t.session_id=s.id),EXISTS(SELECT 1 FROM file_changes f WHERE f.source_session_id=s.id),EXISTS(SELECT 1 FROM session_messages m WHERE m.session_id=s.id),s.source_path,s.parse_warning FROM sessions s";
+const SESSION_SUMMARY_SELECT: &str = "SELECT s.id,s.title,s.agent_type,s.created_at,s.updated_at,s.working_directory,s.git_repository,(SELECT COUNT(*) FROM session_messages m WHERE m.session_id=s.id),(SELECT COUNT(*) FROM session_tool_calls t WHERE t.session_id=s.id),EXISTS(SELECT 1 FROM file_changes f WHERE f.source_session_id=s.id),EXISTS(SELECT 1 FROM session_messages m WHERE m.session_id=s.id),s.source_path,s.parse_warning,COALESCE(json_extract(ss.raw_metadata,'$.clientKind'),'unknown'),(SELECT pb.project_id FROM project_bindings pb WHERE pb.binding_type='source_session' AND pb.binding_id=s.id ORDER BY pb.created_at DESC LIMIT 1),(SELECT p.name FROM project_bindings pb JOIN projects p ON p.id=pb.project_id WHERE pb.binding_type='source_session' AND pb.binding_id=s.id ORDER BY pb.created_at DESC LIMIT 1),(SELECT um.content FROM session_messages um WHERE um.session_id=s.id AND um.role='user' AND ltrim(um.content) NOT LIKE '<recommended_plugins>%' AND ltrim(um.content) NOT LIKE '<environment_context>%' AND ltrim(um.content) NOT LIKE '<app-context>%' AND ltrim(um.content) NOT LIKE '<permissions%' AND ltrim(um.content) NOT LIKE '<collaboration_mode>%' AND ltrim(um.content) NOT LIKE '<apps_instructions>%' AND ltrim(um.content) NOT LIKE '<plugins_instructions>%' AND ltrim(um.content) NOT LIKE '<skills_instructions>%' AND ltrim(um.content) NOT LIKE '<INSTRUCTIONS>%' ORDER BY um.rowid LIMIT 1) FROM sessions s LEFT JOIN source_sessions ss ON ss.id=s.id";
 
 fn session_summary_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionSummary> {
+    let stored_title: String = row.get(1)?;
+    let first_real_request: Option<String> = row.get(16)?;
+    let title = first_real_request
+        .as_deref()
+        .and_then(crate::codex_adapter::human_title_from_content)
+        .unwrap_or_else(|| {
+            if crate::codex_adapter::title_needs_human_request(&stored_title) {
+                "未命名会话".into()
+            } else {
+                stored_title
+            }
+        });
     Ok(SessionSummary {
         id: row.get(0)?,
-        title: row.get(1)?,
+        title,
         agent: parse_agent(row.get(2)?),
         created_at: row.get(3)?,
         updated_at: row.get(4)?,
@@ -573,6 +674,9 @@ fn session_summary_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Session
         can_package: row.get::<_, i64>(10)? != 0,
         source_path: row.get(11)?,
         parse_warning: row.get(12)?,
+        client_kind: row.get(13)?,
+        bound_project_id: row.get(14)?,
+        bound_project_name: row.get(15)?,
     })
 }
 
@@ -581,22 +685,65 @@ pub fn list_sessions(db_path: &Path) -> AppResult<Vec<SessionSummary>> {
     let mut stmt = conn.prepare(&format!(
         "{SESSION_SUMMARY_SELECT} ORDER BY s.updated_at DESC"
     ))?;
-    let summaries = stmt
+    let mut summaries = stmt
         .query_map([], session_summary_from_row)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(AppError::Database)?;
+    let codex_metadata = crate::codex_adapter::load_codex_thread_metadata();
+    for summary in &mut summaries {
+        if let Some(metadata) = codex_metadata.get(&summary.id) {
+            if !metadata.title.trim().is_empty() {
+                summary.title = metadata.title.clone();
+            }
+            if metadata.client_kind != "unknown" {
+                summary.client_kind = metadata.client_kind.clone();
+            }
+        }
+    }
     Ok(summaries)
 }
 
 pub fn get_session_summary(db_path: &Path, id: &str) -> AppResult<SessionSummary> {
-    connect(db_path)?
+    let mut summary = connect(db_path)?
         .query_row(
             &format!("{SESSION_SUMMARY_SELECT} WHERE s.id=?1"),
             params![id],
             session_summary_from_row,
         )
         .optional()?
-        .ok_or_else(|| AppError::Message("找不到指定会话".into()))
+        .ok_or_else(|| AppError::Message("找不到指定会话".into()))?;
+    if let Some(metadata) = crate::codex_adapter::load_codex_thread_metadata().get(id) {
+        if !metadata.title.trim().is_empty() {
+            summary.title = metadata.title.clone();
+        }
+        if metadata.client_kind != "unknown" {
+            summary.client_kind = metadata.client_kind.clone();
+        }
+    }
+    Ok(summary)
+}
+
+pub fn earliest_user_messages(
+    db_path: &Path,
+    session_id: &str,
+    limit: usize,
+) -> AppResult<Vec<SessionMessage>> {
+    let conn = connect(db_path)?;
+    let mut statement = conn.prepare(
+        "SELECT id,content,timestamp FROM session_messages WHERE session_id=?1 AND role='user' ORDER BY rowid LIMIT ?2",
+    )?;
+    let messages = statement
+        .query_map(params![session_id, limit as i64], |row| {
+            Ok(SessionMessage {
+                id: row.get(0)?,
+                role: MessageRole::User,
+                content: row.get(1)?,
+                timestamp: row.get(2)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(AppError::Database)?;
+    Ok(messages)
 }
 
 pub fn get_session(db_path: &Path, id: &str) -> AppResult<SessionDetail> {
@@ -1026,8 +1173,47 @@ mod tests {
         assert!(column_exists(&conn, "projects", "normalized_path").unwrap());
         assert!(column_exists(&conn, "source_sessions", "last_imported_offset").unwrap());
         assert!(column_exists(&conn, "continuations", "failure_code").unwrap());
+        let app_server_tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('app_server_notifications','app_server_turns','app_server_items')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(app_server_tables, 3);
         let backups = list_backups(&db_path).unwrap();
         assert_eq!(backups.len(), 1);
+        assert!(Path::new(&backups[0].path).is_file());
+    }
+
+    #[test]
+    fn migrates_v3_notification_schema_with_one_recoverable_backup() {
+        let temporary = tempfile::tempdir().unwrap();
+        let db_path = temporary.path().join("continuum.sqlite3");
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(MIGRATION_SQL).unwrap();
+            conn.execute(
+                "INSERT INTO schema_migrations(version,applied_at) VALUES(1,'now'),(2,'now')",
+                [],
+            )
+            .unwrap();
+            apply_v3(&conn).unwrap();
+        }
+        initialize(&db_path).unwrap();
+        assert_eq!(schema_version(&db_path).unwrap(), LATEST_SCHEMA_VERSION);
+        let conn = connect(&db_path).unwrap();
+        let table_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='app_server_items'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(table_exists, 1);
+        let backups = list_backups(&db_path).unwrap();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(backups[0].schema_version, 3);
         assert!(Path::new(&backups[0].path).is_file());
     }
 

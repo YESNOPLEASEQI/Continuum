@@ -27,7 +27,7 @@ compiling
       └─ spawn error → launch_failed
 ```
 
-`create_continuation(..., launch=false)` 完成快照与文件落盘；`launch_continuation` 单独启动进程，因此前端能显示真实阶段。支持 App Server 且 Profile 明确使用 `approvalMode=never` 时，Fresh 通过 `thread/start` + `turn/start` 创建干净会话并直接取得 thread ID；其他情况回退到 `codex -C <cwd> <short-prompt>` 与严格文件检测。两条 Fresh 路径都不进入 `resume` 或 `fork`。原生 Resume/Fork 使用独立命令。
+`create_continuation(..., launch=false)` 完成快照与文件落盘；`launch_continuation` 单独启动进程，因此前端能显示真实阶段。支持 App Server 且 Profile 没有 CLI 专用参数时，Fresh 通过 `thread/start` 创建干净会话，先确认返回的 thread ID 未被其他 Continuation 或项目绑定使用，再调用 `turn/start` 注入短提示并绑定；`on-request` / `untrusted` 的命令、网络和文件修改审批由全局连接管理器 relay 到 Continuum UI。App Server reader 同步把 thread、turn、item 和 error 生命周期通知投影到规范化会话与统一时间线；高频 delta 不逐块写库，以 `item/completed` 为权威结果，本地 JSONL watcher 只读校验 canonical item ID 并补齐漏项。不能无损映射时回退到 `codex -C <cwd> <short-prompt>` 与严格文件检测。两条 Fresh 路径都不进入 `resume` 或 `fork`。原生 Resume/Fork 使用独立命令。
 
 ## 新会话识别
 
@@ -62,8 +62,9 @@ compiling
 - `project_bindings`：来源会话、Skill、MCP 与项目关系。
 - `context_snapshots` / `context_items`：可重现且可解释的编译产物。
 - `continuations`：文件、Hash、marker、PID、工作目录、时间、目标 session 和监听状态。
+- `app_server_notifications` / `app_server_turns` / `app_server_items`：不含完整 payload 的紧凑生命周期账本和规范化 App Server 状态。
 
-SQLite 使用 WAL、外键和 busy timeout。所有关系都落盘，因此重启不依赖内存状态恢复。
+SQLite 使用 WAL、外键和 busy timeout。当前 Schema 为 v4；v2/v3 升级前创建可恢复备份，Windows 会先检查至少“数据库大小 + 128 MiB”的可用空间。所有关系都落盘，因此重启不依赖内存状态恢复。
 
 ## Windows 进程启动
 

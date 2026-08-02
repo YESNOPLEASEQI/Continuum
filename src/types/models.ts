@@ -25,6 +25,9 @@ export interface SessionSummary {
   canPackage: boolean;
   sourcePath: string;
   parseWarning: string | null;
+  clientKind: "desktop" | "cli" | "unknown";
+  boundProjectId: string | null;
+  boundProjectName: string | null;
 }
 
 export interface CodexCapabilityReport {
@@ -523,6 +526,61 @@ export interface ContinuationPollResult {
   candidates: SessionSummary[];
   insertedNodes: number;
 }
+
+export type AppServerApprovalDecision =
+  | "accept"
+  | "acceptForSession"
+  | "decline"
+  | "cancel";
+
+export interface AppServerToolInputOption {
+  label: string;
+  description: string;
+}
+
+export interface AppServerToolInputQuestion {
+  id: string;
+  header: string;
+  question: string;
+  isOther?: boolean;
+  isSecret?: boolean;
+  options?: AppServerToolInputOption[] | null;
+}
+
+export interface AppServerClientRequest {
+  id: string;
+  continuationId: string;
+  projectId: string;
+  threadId: string;
+  turnId: string;
+  itemId: string;
+  kind:
+    | "command"
+    | "file_change"
+    | "network"
+    | "permissions"
+    | "mcp_elicitation"
+    | "tool_user_input";
+  reason: string | null;
+  command: string | null;
+  cwd: string | null;
+  commandActions: Array<Record<string, unknown>>;
+  grantRoot: string | null;
+  networkHost: string | null;
+  networkProtocol: string | null;
+  permissions: Record<string, unknown> | null;
+  serverName: string | null;
+  message: string | null;
+  mode: string | null;
+  url: string | null;
+  requestedSchema: Record<string, unknown> | null;
+  metadata: Record<string, unknown> | null;
+  questions: AppServerToolInputQuestion[];
+  autoResolutionMs: number | null;
+  startedAtMs: number;
+}
+
+export type AppServerClientResponse = Record<string, unknown>;
 
 export interface UnifiedSkill {
   id: string;

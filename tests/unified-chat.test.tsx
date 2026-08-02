@@ -140,5 +140,12 @@ describe("Unified timeline", () => {
     );
     expect(screen.getAllByText(/git status --short/).length).toBeGreaterThan(0);
     expect(screen.queryByText("Timeline is ready")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Graph/ }));
+    expect(
+      screen.getByRole("heading", { name: "分支与会话链" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/SQLite 中的真实 branch/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Files/ }));
+    expect(screen.getByRole("heading", { name: "Files" })).toBeInTheDocument();
   });
 });

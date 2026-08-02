@@ -29,6 +29,8 @@ import type {
   GlobalSearchResult,
   DiagnosticsReport,
   DiagnosticPathStatus,
+  AppServerClientRequest,
+  AppServerClientResponse,
 } from "../types/models";
 
 const browserDefaults: AppSettings = {
@@ -285,6 +287,18 @@ export const appApi = {
   pollContinuation: (continuationId: string) =>
     desktopInvoke<ContinuationPollResult>("poll_continuation", {
       continuationId,
+    }),
+  appServerRequests: async () =>
+    isTauri()
+      ? desktopInvoke<AppServerClientRequest[]>("list_app_server_requests")
+      : [],
+  respondAppServerRequest: (
+    requestId: string,
+    response: AppServerClientResponse,
+  ) =>
+    desktopInvoke<void>("respond_app_server_request", {
+      requestId,
+      response,
     }),
   launchSourceSession: (sessionId: string, operation: "resume" | "fork") =>
     desktopInvoke<number>("launch_source_session", { sessionId, operation }),

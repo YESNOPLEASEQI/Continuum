@@ -1,5 +1,6 @@
 use crate::{
     agent_adapters::AgentAdapter,
+    app_server_persistence,
     codex_adapter::CodexAdapter,
     database,
     error::{AppError, AppResult},
@@ -15,7 +16,7 @@ use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File},
-    io::{Read, Seek, SeekFrom},
+    io::{BufRead, BufReader, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     thread,
     time::{Duration, SystemTime},
@@ -147,6 +148,7 @@ fn store_full_cursor(db_path: &Path, detail: &SessionDetail) -> AppResult<()> {
         "commands": detail.commands,
         "changedFiles": detail.changed_files,
         "failedSteps": detail.failed_steps,
+        "clientKind": detail.summary.client_kind,
     });
     let conn = database::connect(db_path)?;
     conn.execute("INSERT INTO source_sessions(id,agent_type,title,source_path,working_directory,created_at,updated_at,detail_json,external_session_id,session_file_path,normalized_working_directory,last_imported_offset,last_imported_line,pending_fragment,file_hash,status,raw_metadata,file_created_at,file_modified_at) VALUES(?1,'codex',?2,?3,?4,?5,?6,?7,?1,?3,?8,?9,?10,?11,?12,'indexed',?13,?14,?15) ON CONFLICT(id) DO UPDATE SET title=excluded.title,source_path=excluded.source_path,working_directory=excluded.working_directory,updated_at=excluded.updated_at,detail_json=excluded.detail_json,external_session_id=excluded.external_session_id,session_file_path=excluded.session_file_path,normalized_working_directory=excluded.normalized_working_directory,last_imported_offset=excluded.last_imported_offset,last_imported_line=excluded.last_imported_line,pending_fragment=excluded.pending_fragment,file_hash=excluded.file_hash,status='indexed',raw_metadata=excluded.raw_metadata,file_created_at=excluded.file_created_at,file_modified_at=excluded.file_modified_at",params![detail.summary.id,detail.summary.title,detail.summary.source_path,detail.summary.working_directory,detail.summary.created_at,detail.summary.updated_at,serde_json::to_string(&compact)?,normalized_cwd,offset as i64,completed_lines as i64,pending,filesystem::sha256_file(path)?,metadata.to_string(),file_created_at,file_modified_at])?;
@@ -164,6 +166,7 @@ pub fn full_index_file(
 ) -> AppResult<SessionDetail> {
     let adapter = CodexAdapter::new();
     let mut detail = adapter.parse_session(path)?;
+    app_server_persistence::reconcile_jsonl_detail(db_path, &mut detail)?;
     if read_git_state {
         if let Some(cwd) = detail.summary.working_directory.as_deref() {
             let git = git_inspector::inspect(Path::new(cwd));
@@ -291,6 +294,16 @@ fn read_appended(path: &Path, offset: u64) -> AppResult<Vec<u8>> {
     Err(AppError::Io(
         last_error.expect("read attempt records an error"),
     ))
+}
+
+fn client_kind_from_session_meta(path: &Path) -> AppResult<String> {
+    let file = File::open(path)?;
+    let mut reader = BufReader::new(file);
+    let mut first_record = String::new();
+    reader.read_line(&mut first_record)?;
+    let value = serde_json::from_str::<Value>(&first_record)
+        .map_err(|error| AppError::Message(format!("会话元数据无效：{error}")))?;
+    Ok(crate::codex_adapter::client_kind_from_raw(&[value]))
 }
 
 struct IncrementalLines {
@@ -428,10 +441,21 @@ fn incremental_index_file_with_cursor(
     if let Some(value) = &modified_at {
         summary.updated_at = value.clone();
     }
+    if summary.client_kind == "unknown" {
+        summary.client_kind =
+            client_kind_from_session_meta(path).unwrap_or_else(|_| "unknown".into());
+    }
     summary.message_count += messages.len();
     summary.tool_call_count += tool_calls.len();
     summary.has_file_changes |= !changed_files.is_empty();
-    let detail = SessionDetail {
+    let mut title_messages = database::earliest_user_messages(db_path, &cursor.session_id, 100)?;
+    title_messages.extend(messages.iter().cloned());
+    if let Some(title) = crate::codex_adapter::human_session_title(&title_messages) {
+        summary.title = title;
+    } else if crate::codex_adapter::title_needs_human_request(&summary.title) {
+        summary.title = "未命名会话".into();
+    }
+    let mut detail = SessionDetail {
         summary,
         goal_summary: String::new(),
         messages,
@@ -442,6 +466,7 @@ fn incremental_index_file_with_cursor(
         git_state: None,
         raw_data: vec![],
     };
+    app_server_persistence::reconcile_jsonl_detail(db_path, &mut detail)?;
     database::append_session_delta(db_path, &detail)?;
     let normalized_cwd = detail
         .summary
@@ -451,7 +476,7 @@ fn incremental_index_file_with_cursor(
         .map(filesystem::normalize_path_key)
         .unwrap_or_default();
     let next_hash = filesystem::extend_hash_chain(&cursor.file_hash, &appended);
-    database::connect(db_path)?.execute("UPDATE source_sessions SET title=?1,working_directory=?2,normalized_working_directory=?3,updated_at=?4,detail_json='{}',raw_metadata=?5,last_imported_offset=?6,last_imported_line=?7,pending_fragment=?8,file_hash=?9,file_modified_at=?10,status='indexed' WHERE id=?11",params![detail.summary.title,detail.summary.working_directory,normalized_cwd,detail.summary.updated_at,serde_json::json!({"commands":detail.commands,"changedFiles":detail.changed_files,"failedSteps":detail.failed_steps}).to_string(),metadata.len() as i64,(cursor.last_imported_line+parsed.completed_lines) as i64,parsed.pending,next_hash,modified_at,cursor.session_id])?;
+    database::connect(db_path)?.execute("UPDATE source_sessions SET title=?1,working_directory=?2,normalized_working_directory=?3,updated_at=?4,detail_json='{}',raw_metadata=?5,last_imported_offset=?6,last_imported_line=?7,pending_fragment=?8,file_hash=?9,file_modified_at=?10,status='indexed' WHERE id=?11",params![detail.summary.title,detail.summary.working_directory,normalized_cwd,detail.summary.updated_at,serde_json::json!({"commands":detail.commands,"changedFiles":detail.changed_files,"failedSteps":detail.failed_steps,"clientKind":detail.summary.client_kind}).to_string(),metadata.len() as i64,(cursor.last_imported_line+parsed.completed_lines) as i64,parsed.pending,next_hash,modified_at,cursor.session_id])?;
     let inserted_nodes = unified_project::sync_indexed_session(db_path, &detail)?;
     Ok((false, inserted, inserted_nodes, parsed.errors.len()))
 }
@@ -532,5 +557,43 @@ mod tests {
             incremental_index_file(&db_path, &session_path).unwrap().1,
             0
         );
+    }
+
+    #[test]
+    fn incremental_repair_uses_earliest_real_request_and_session_originator() {
+        let temporary = tempfile::tempdir().unwrap();
+        let db_path = temporary.path().join("continuum.sqlite3");
+        database::initialize(&db_path).unwrap();
+        let session_path = temporary.path().join("rollout-session.jsonl");
+        fs::write(
+            &session_path,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"repair-session\",\"originator\":\"Codex Desktop\",\"timestamp\":\"2026-01-01T00:00:00Z\"}}\n{\"type\":\"response_item\",\"payload\":{\"role\":\"user\",\"content\":[{\"text\":\"<recommended_plugins>injected</recommended_plugins>\"}]}}\n{\"type\":\"response_item\",\"payload\":{\"role\":\"user\",\"content\":[{\"text\":\"最早的真实请求\"}]}}\n",
+        )
+        .unwrap();
+        full_index_file(&db_path, &session_path, false).unwrap();
+        database::connect(&db_path)
+            .unwrap()
+            .execute(
+                "UPDATE sessions SET title='rollout-session' WHERE id='repair-session'",
+                [],
+            )
+            .unwrap();
+        database::connect(&db_path)
+            .unwrap()
+            .execute(
+                "UPDATE source_sessions SET raw_metadata='{}' WHERE id='repair-session'",
+                [],
+            )
+            .unwrap();
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&session_path)
+            .unwrap()
+            .write_all(b"{\"type\":\"response_item\",\"payload\":{\"role\":\"user\",\"content\":[{\"text\":\"later follow-up\"}]}}\n")
+            .unwrap();
+        incremental_index_file(&db_path, &session_path).unwrap();
+        let summary = database::get_session_summary(&db_path, "repair-session").unwrap();
+        assert_eq!(summary.title, "最早的真实请求");
+        assert_eq!(summary.client_kind, "desktop");
     }
 }

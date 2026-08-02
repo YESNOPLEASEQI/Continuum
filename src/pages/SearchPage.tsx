@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { appApi } from "../api/bridge";
 import { Badge, EmptyState, PageHeader } from "../components/ui";
 import { useAppStore } from "../store/appStore";
+import { useMajorSessionScan } from "../motion/useMajorSessionScan";
 import type { GlobalSearchResult } from "../types/models";
 
 const commands = [
@@ -18,7 +19,7 @@ const commands = [
 
 export default function SearchPage() {
   const navigate = useNavigate();
-  const scanSessions = useAppStore((state) => state.scanSessions);
+  const scanSessions = useMajorSessionScan();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<GlobalSearchResult[]>([]);
   const [loading, setLoading] = useState(false);

@@ -4,6 +4,7 @@ export const sessionFixture: SessionSummary = {
   id: "session-001", title: "修复会话解析器", agent: "codex", createdAt: "2026-07-29T10:00:00Z", updatedAt: "2026-07-30T10:00:00Z",
   workingDirectory: "C:\\work\\agentpack", gitRepository: "C:\\work\\agentpack", messageCount: 12, toolCallCount: 4,
   hasFileChanges: true, canPackage: true, sourcePath: "C:\\Users\\test\\.codex\\sessions\\session-001.jsonl", parseWarning: null,
+  clientKind: "desktop", boundProjectId: null, boundProjectName: null,
 };
 
 export const packageDetailFixture: PackageDetail = {

@@ -123,6 +123,9 @@ pub struct SessionSummary {
     pub can_package: bool,
     pub source_path: String,
     pub parse_warning: Option<String>,
+    pub client_kind: String,
+    pub bound_project_id: Option<String>,
+    pub bound_project_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -532,6 +535,35 @@ pub struct ContinuationPollResult {
     pub continuation: ContinuationRecord,
     pub candidates: Vec<SessionSummary>,
     pub inserted_nodes: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AppServerClientRequest {
+    pub id: String,
+    pub continuation_id: String,
+    pub project_id: String,
+    pub thread_id: String,
+    pub turn_id: String,
+    pub item_id: String,
+    pub kind: String,
+    pub reason: Option<String>,
+    pub command: Option<String>,
+    pub cwd: Option<String>,
+    pub command_actions: Vec<Value>,
+    pub grant_root: Option<String>,
+    pub network_host: Option<String>,
+    pub network_protocol: Option<String>,
+    pub permissions: Option<Value>,
+    pub server_name: Option<String>,
+    pub message: Option<String>,
+    pub mode: Option<String>,
+    pub url: Option<String>,
+    pub requested_schema: Option<Value>,
+    pub metadata: Option<Value>,
+    pub questions: Vec<Value>,
+    pub auto_resolution_ms: Option<u64>,
+    pub started_at_ms: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
