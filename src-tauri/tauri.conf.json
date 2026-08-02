@@ -1,0 +1,34 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Continuum",
+  "version": "0.1.0-alpha.2",
+  "identifier": "studio.continuum.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Continuum",
+        "width": 1380,
+        "height": 880,
+        "minWidth": 820,
+        "minHeight": 620,
+        "center": true,
+        "decorations": true,
+        "transparent": false
+      }
+    ],
+    "security": { "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: data:; connect-src ipc: http://ipc.localhost" }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "nsis",
+    "category": "DeveloperTool",
+    "shortDescription": "Unified local conversations across coding agents",
+    "longDescription": "Merge local coding-agent sessions into project conversation graphs and continue with explainable compressed context."
+  }
+}
