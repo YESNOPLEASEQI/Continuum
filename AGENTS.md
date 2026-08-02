@@ -47,8 +47,8 @@
 - 数据库 Schema：`v4`；v4 新增 App Server 通知、turn 和 item 的紧凑规范化持久化表。
 - 真实 Agent 支持：Codex CLI/Desktop `0.146.0` 已验证；其他 Agent 只保留架构边界。
 - GitHub：<https://github.com/YESNOPLEASEQI/Continuum>，Public，默认分支 `main`。
-- 当前公开基线提交：`edd102d`（Initial public alpha release）。
-- 本文件和 `docs/HANDOFF.md` 是基线提交之后新增的本地文档，是否推送由用户后续明确决定。
+- 当前功能公开基线提交：`5e82f4b`（App Server 持久化、审批闭环、会话标题修复与动态档案工作区 UI）。
+- `AGENTS.md`、`docs/HANDOFF.md` 和 UI 设计规范已纳入 `main`，不再只是本地交接文档。
 - 许可证：尚未添加。公开仓库目前不等同于已授予开源许可。
 
 ## 3. 产品目标
@@ -290,6 +290,14 @@ cargo test --lib real_app_server_fresh_continuation_creates_binds_and_indexes_a_
 ## 12. 对话交接日志
 
 在本节顶部追加记录。保留最近约 20 条高价值记录；更旧内容可整理进 `docs/nightly-worklog.md`。格式必须包含日期、目标、变化、验证、未完成和 Git 状态。
+
+### 2026-08-03 — 完整工作区发布到 main
+
+- 目标：按用户明确要求，把当前 Continuum 的完整已验证工作区直接推送到远端 `main`。
+- 变化：确认工作区中的 App Server/Schema v4、审批 UI、Source Sessions 标题与来源修复、动态档案编辑台、测试和文档属于同一批连续项目成果；检查远端无新增提交后，将 50 个文件作为提交 `5e82f4b`（`Implement App Server persistence and archive workspace UI`）推送到 `origin/main`。数据库、会话原文、`.continuum/`、`dist/`、Rust `target/` 和 release 安装包均未进入 Git。
+- 验证：`gh` 已认证为仓库所有者账号；推送前 `origin/main...main` 为 `0 0`；`git diff --cached --check` 在修正 `docs/HANDOFF.md` 三处 Markdown 行尾空格后通过；敏感模式扫描唯一命中是诊断测试使用的假路径 `sk-abcdefghijklmnopqrstuvwxyz`。本轮未修改产品代码，也未重复运行测试；沿用紧邻发布前已真实完成的 TypeScript、9 文件/15 React 测试、4 个 E2E、Vite build、45 个 Rust 测试、strict Clippy 和 Tauri/NSIS release 验证。
+- 未完成：许可证、CI/release 附件以及其余 P0/P1 能力仍按当前任务队列推进；本轮没有创建 PR，因为用户明确要求直接推送 `main`。
+- Git 状态：功能提交 `5e82f4b` 已推送到 `origin/main`；本条总账更新将作为后续纯文档提交同步到同一分支，完成后工作区应保持干净。
 
 ### 2026-08-02 — 动态档案编辑台全量前端操作模型落地
 
